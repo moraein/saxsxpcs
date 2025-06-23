@@ -1,0 +1,152 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+NeXus file reader for SAXS and XPCS data.
+"""
+
+import logging
+import numpy as np
+from typing import Dict, Any, Optional
+
+from .hdf5_reader import HDF5Reader
+
+logger = logging.getLogger(__name__)
+
+class NeXusReader(HDF5Reader):
+    """Reader for NeXus files (which are HDF5 files with specific structure)."""
+    
+    def __init__(self, file_path: str):
+        """Initialize the NeXus reader.
+        
+        Parameters
+        ----------
+        file_path : str
+            Path to the NeXus file to read.
+        """
+        super().__init__(file_path)
+    
+    def read(self) -> bool:
+        """Read data from the NeXus file.
+        
+        Returns
+        -------
+        bool
+            True if the file was read successfully, False otherwise.
+        """
+        try:
+            if not self.is_open:
+                self.open()
+            
+            # Read NeXus-specific structure
+            self.read_nexus_structure()
+            
+            # Also read all datasets and metadata
+            self.read_all_datasets()
+            self.read_metadata_to_dict()
+            
+            return True
+        except Exception as e:
+            self.logger.error(f"Error reading NeXus file {self.file_path}: {e}")
+            return False
+    
+    def read_nexus_structure(self):
+        """Read NeXus-specific data structure."""
+        # Look for common NeXus entry points
+        nexus_paths = [
+            '/entry/data/data',
+            '/entry/instrument/detector/data',
+            '/entry/sample/name',
+            '/entry/instrument/source/energy',
+            '/entry/instrument/detector/distance',
+            '/entry/instrument/detector/beam_center_x',
+            '/entry/instrument/detector/beam_center_y',
+            '/entry/instrument/detector/x_pixel_size',
+            '/entry/instrument/detector/y_pixel_size',
+        ]
+        
+        for path in nexus_paths:
+            data = self.read_dataset(path)
+            if data is not None:
+                # Create a simplified key name
+                key = path.split('/')[-1]
+                if key in self.data:
+                    # If key already exists, use the full path
+                    key = path.replace('/', '_').strip('_')
+                self.data[key] = data
+                self.logger.debug(f"Read NeXus dataset {path} as key '{key}'")
+    
+    def get_nexus_metadata(self) -> Dict[str, Any]:
+        """Get NeXus-specific metadata.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary containing NeXus metadata.
+        """
+        nexus_metadata = {}
+        
+        # Common NeXus metadata paths
+        metadata_paths = {
+            'sample_name': '/entry/sample/name',
+            'energy': '/entry/instrument/source/energy',
+            'wavelength': '/entry/instrument/source/wavelength',
+            'detector_distance': '/entry/instrument/detector/distance',
+            'beam_center_x': '/entry/instrument/detector/beam_center_x',
+            'beam_center_y': '/entry/instrument/detector/beam_center_y',
+            'pixel_size_x': '/entry/instrument/detector/x_pixel_size',
+            'pixel_size_y': '/entry/instrument/detector/y_pixel_size',
+            'exposure_time': '/entry/instrument/detector/count_time',
+            'start_time': '/entry/start_time',
+            'end_time': '/entry/end_time',
+        }
+        
+        for key, path in metadata_paths.items():
+            data = self.read_dataset(path)
+            if data is not None:
+                # Handle scalar values
+                if isinstance(data, np.ndarray) and data.size == 1:
+                    data = data.item()
+                nexus_metadata[key] = data
+                self.logger.debug(f"Read NeXus metadata {key}: {data}")
+        
+        return nexus_metadata
+    
+    @classmethod
+    def can_read(cls, file_path: str) -> bool:
+        """Check if the file can be read by this reader.
+        
+        Parameters
+        ----------
+        file_path : str
+            Path to the file to check.
+        
+        Returns
+        -------
+        bool
+            True if the file can be read by this reader, False otherwise.
+        """
+        try:
+            # First check if it's a valid HDF5 file
+            if not super().can_read(file_path):
+                return False
+            
+            # Check for NeXus-specific structure
+            import h5py
+            with h5py.File(file_path, 'r') as f:
+                # Look for NeXus entry structure
+                if 'entry' in f:
+                    entry = f['entry']
+                    # Check for common NeXus groups
+                    nexus_groups = ['data', 'instrument', 'sample']
+                    found_groups = sum(1 for group in nexus_groups if group in entry)
+                    return found_groups >= 1
+                
+                # Check for NeXus class attribute
+                if 'NX_class' in f.attrs:
+                    return True
+                
+                return False
+        except Exception:
+            return False
+
